@@ -1,0 +1,32 @@
+name: Scrape manga listings
+
+on:
+  schedule:
+    # 每 4 小時執行一次
+    - cron: '0 */4 * * *'
+  workflow_dispatch: # 手動觸發
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install scraper dependencies
+        run: cd scraper && npm install
+
+      - name: Install Playwright Chromium
+        run: cd scraper && npx playwright install --with-deps chromium
+
+      - name: Run scraper
+        run: cd scraper && npm start
+        env:
+          WORKERS_API_URL: ${{ secrets.WORKERS_API_URL }}
+          API_TOKEN: ${{ secrets.API_TOKEN }}

@@ -1,0 +1,8 @@
+{
+  "name": "manga-radar",
+  "private": true,
+  "scripts": {
+    "dev:workers": "cd workers && npm run dev",
+    "deploy:workers": "cd workers && npm run deploy"
+  }
+}

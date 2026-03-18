@@ -1,0 +1,8 @@
+name = "manga-radar-api"
+main = "src/index.ts"
+compatibility_date = "2025-03-17"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "manga-radar-db"
+database_id = "8210aa36-5726-4309-bc72-a8ad278486c5"
