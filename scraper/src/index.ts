@@ -78,7 +78,13 @@ async function main() {
     return;
   }
 
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      "--disable-blink-features=AutomationControlled",
+      "--no-sandbox",
+    ],
+  });
 
   try {
     for (const source of sources) {
@@ -90,7 +96,22 @@ async function main() {
 
       console.log(`\n--- 爬取: ${source.name} (${source.platform}) ---`);
 
-      const context = await browser.newContext();
+      const context = await browser.newContext({
+        userAgent:
+          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        viewport: { width: 1920, height: 1080 },
+        locale: "zh-TW",
+        timezoneId: "Asia/Taipei",
+        extraHTTPHeaders: {
+          "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        },
+      });
+      // 隱藏 webdriver 標記
+      await context.addInitScript(() => {
+        Object.defineProperty(navigator, "webdriver", { get: () => false });
+        // @ts-ignore
+        delete navigator.__proto__.webdriver;
+      });
       const page = await context.newPage();
 
       try {

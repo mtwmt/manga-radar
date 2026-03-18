@@ -4,258 +4,241 @@ import type { ScrapedProduct } from "../types";
 /**
  * 露天拍賣爬蟲
  *
- * 露天是 Vue SPA，必須用 Playwright 等待 JS 渲染完成。
- * 商品卡片 class 前綴為 rt-product-card。
- * 商品 URL 格式：https://www.ruten.com.tw/item/{商品ID}/
- * 商品 ID 為純數字字串（通常 14~17 位）。
+ * 策略一（主要）：攔截 Vue SPA 發出的 API 請求，直接取得 JSON 商品資料
+ * 策略二（Fallback）：從 DOM 提取商品資料
  */
 
-/** 隨機延遲（毫秒），避免被偵測為爬蟲 */
+/** 隨機延遲（毫秒） */
 function randomDelay(min = 500, max = 1500): Promise<void> {
   const ms = Math.floor(Math.random() * (max - min + 1)) + min;
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * 策略一：從 .rt-product-card DOM 提取商品資料（主要策略）
- *
- * 露天商品卡片 DOM 結構：
- *   .search-result-container > .product-item > .rt-product-card
- *     ├── .rt-product-card-img-wrap
- *     │     ├── .rt-product-card-img-link  (A, 商品連結)
- *     │     └── .rt-product-card-img       (IMG, 商品圖片)
- *     └── .rt-product-card-detail-wrap
- *           ├── .rt-product-card-name-wrap (A, 商品連結)
- *           │     └── .rt-product-card-name (P, 商品標題)
- *           └── .rt-product-card-price-wrap
- *                 └── .rt-text-price        (SPAN, 價格數字)
- */
-async function extractFromProductCards(
-  page: Page
-): Promise<ScrapedProduct[]> {
-  // 等待商品卡片載入
-  try {
-    await page.waitForSelector(".rt-product-card", { timeout: 15000 });
-  } catch {
-    console.warn("[露天] 等待 .rt-product-card 載入逾時");
-    return [];
-  }
-
-  const products = await page.evaluate(() => {
-    const results: Array<{
-      platformId: string;
-      title: string;
-      price: number | null;
-      url: string;
-      imageUrl: string | null;
-      seller: string | null;
-    }> = [];
-
-    const cards = document.querySelectorAll(".rt-product-card");
-
-    for (const card of cards) {
-      // 商品連結與 ID
-      const linkEl =
-        card.querySelector<HTMLAnchorElement>(".rt-product-card-img-link") ||
-        card.querySelector<HTMLAnchorElement>(".rt-product-card-name-wrap");
-      const href = linkEl?.href || "";
-      if (!href || !href.includes("/item/")) continue;
-
-      const idMatch = href.match(/\/item\/(\d+)/);
-      if (!idMatch) continue;
-      const productId = idMatch[1];
-
-      // 商品標題
-      const nameEl = card.querySelector(".rt-product-card-name");
-      const title = nameEl?.textContent?.trim() || "";
-      if (!title) continue;
-
-      // 價格：取第一個 .rt-text-price（有價格區間時取最低價）
-      const priceEls = card.querySelectorAll(".rt-text-price");
-      let price: number | null = null;
-      if (priceEls.length > 0) {
-        const priceText =
-          priceEls[0].textContent?.replace(/[^0-9.]/g, "") || "";
-        const parsed = parseFloat(priceText);
-        if (!isNaN(parsed) && parsed > 0) price = parsed;
-      }
-
-      // 圖片
-      const img = card.querySelector<HTMLImageElement>(
-        ".rt-product-card-img"
-      );
-      const imageUrl =
-        img?.src || img?.getAttribute("data-src") || null;
-
-      // 賣家：露天分類列表頁不顯示賣家資訊
-      const seller: string | null = null;
-
-      results.push({
-        platformId: productId,
-        title,
-        price,
-        url: href,
-        imageUrl,
-        seller,
-      });
-    }
-
-    return results;
-  });
-
-  return products;
+interface RutenApiItem {
+  Id?: string;
+  Name?: string;
+  Image?: string;
+  PriceRange?: number[];
+  Price?: number;
+  BuyPrice?: number;
+  Nick?: string;
+  StoreName?: string;
 }
 
 /**
- * 策略二（Fallback）：透過通用 a[href*="/item/"] 提取商品資料
+ * 策略一：攔截 API 回應
  *
- * 當 .rt-product-card 選擇器失效時（例如露天改版），
- * 從所有指向商品頁面的連結中提取商品資料。
+ * 露天是 Vue SPA，頁面載入時會呼叫 rtapi.ruten.com.tw 取得商品資料。
+ * 攔截這些 API 回應，直接解析 JSON。
  */
-async function extractFromLinks(page: Page): Promise<ScrapedProduct[]> {
-  const products = await page.evaluate(() => {
-    const results: Array<{
-      platformId: string;
-      title: string;
-      price: number | null;
-      url: string;
-      imageUrl: string | null;
-      seller: string | null;
-    }> = [];
-
-    const links = document.querySelectorAll<HTMLAnchorElement>(
-      'a[href*="/item/"]'
-    );
-    const seen = new Set<string>();
-
-    for (const link of links) {
-      const href = link.href;
-      if (!href || seen.has(href)) continue;
-
-      const idMatch = href.match(/\/item\/(\d+)/);
-      if (!idMatch) continue;
-
-      seen.add(href);
-      const productId = idMatch[1];
-
-      // 在連結或其父元素中尋找商品資訊
-      const card =
-        link.closest(".product-item") ||
-        link.closest('[class*="card"]') ||
-        link.closest("div") ||
-        link;
-
-      // 標題：優先從 img alt 取得，其次從連結文字
-      const img = card.querySelector<HTMLImageElement>("img");
-      const titleFromAlt = img?.alt?.trim() || "";
-      const titleFromLink = link.textContent?.trim() || "";
-      const titleFromTitle = link.title?.trim() || "";
-      const title = titleFromAlt || titleFromTitle || titleFromLink;
-      if (!title || title.length < 2) continue;
-
-      // 價格
-      const priceEl = card.querySelector(
-        '[class*="price"], [class*="Price"]'
-      );
-      let price: number | null = null;
-      if (priceEl) {
-        const priceText =
-          priceEl.textContent?.replace(/[^0-9.]/g, "") || "";
-        const parsed = parseFloat(priceText);
-        if (!isNaN(parsed) && parsed > 0) price = parsed;
-      }
-
-      // 圖片
-      const imageUrl =
-        img?.src || img?.getAttribute("data-src") || null;
-
-      results.push({
-        platformId: productId,
-        title,
-        price,
-        url: href,
-        imageUrl,
-        seller: null,
-      });
-    }
-
-    return results;
-  });
-
-  return products;
-}
-
-/**
- * 露天拍賣爬蟲主函式
- *
- * 優先使用 .rt-product-card DOM selector 提取商品資料，
- * 若失敗則 fallback 到通用的 a[href*="/item/"] 連結解析。
- *
- * @param page - Playwright Page 實例
- * @param url - 要爬取的分類/搜尋頁面 URL
- * @returns 爬取到的商品陣列
- */
-export async function scrapeRuten(
+async function interceptApiResponse(
   page: Page,
   url: string
 ): Promise<ScrapedProduct[]> {
-  console.log(`[露天] 開始爬取: ${url}`);
+  const products: ScrapedProduct[] = [];
 
-  // 加入隨機延遲，模擬人類行為
-  await randomDelay(500, 1500);
+  // 監聽所有 API 回應
+  const apiPromise = new Promise<RutenApiItem[]>((resolve) => {
+    let resolved = false;
+
+    page.on("response", async (response) => {
+      if (resolved) return;
+      const reqUrl = response.url();
+
+      // 攔截露天搜尋 API 回應
+      if (
+        reqUrl.includes("rtapi.ruten.com.tw") &&
+        (reqUrl.includes("search") || reqUrl.includes("seller"))
+      ) {
+        try {
+          const json = await response.json();
+          const rows = json.Rows || json.rows || json.Items || json.items;
+          if (Array.isArray(rows) && rows.length > 0) {
+            resolved = true;
+            resolve(rows);
+          }
+        } catch {
+          // 非 JSON 回應，忽略
+        }
+      }
+    });
+
+    // 超時 fallback
+    setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        resolve([]);
+      }
+    }, 25000);
+  });
 
   await page.goto(url, {
     waitUntil: "domcontentloaded",
     timeout: 30000,
   });
 
-  // 等待 SPA 渲染完成
+  // 等待 SPA 渲染 + API 回應
   await page.waitForLoadState("networkidle").catch(() => {
-    console.warn("[露天] networkidle 等待逾時，繼續嘗試提取");
+    console.warn("[露天] networkidle 等待逾時");
   });
 
-  // 額外等待讓 Vue 完成渲染
-  await randomDelay(500, 1000);
+  const rows = await apiPromise;
 
-  // 嘗試向下捲動以觸發懶載入
-  await page.evaluate(() => {
-    window.scrollTo(0, document.body.scrollHeight / 2);
-  });
-  await randomDelay(300, 600);
-  await page.evaluate(() => {
-    window.scrollTo(0, document.body.scrollHeight);
-  });
-  await randomDelay(300, 600);
+  if (rows.length > 0) {
+    console.log(`[露天] API 攔截成功，共 ${rows.length} 件商品`);
+    for (const item of rows) {
+      const id = String(item.Id || "");
+      const title = item.Name || "";
+      if (!id || !title) continue;
 
-  // 策略一：從 .rt-product-card DOM 提取
-  console.log("[露天] 嘗試從 .rt-product-card 提取商品資料...");
-  const products = await extractFromProductCards(page);
+      const price = item.BuyPrice || item.Price || item.PriceRange?.[0] || null;
 
-  if (products.length > 0) {
-    console.log(`[露天] DOM 提取成功，共 ${products.length} 件商品`);
+      products.push({
+        platformId: id,
+        title,
+        price: price ? Number(price) : null,
+        url: `https://www.ruten.com.tw/item/${id}`,
+        imageUrl: item.Image || null,
+        seller: item.StoreName || item.Nick || null,
+      });
+    }
     return products;
   }
 
-  // 策略二：Fallback 到通用連結解析
-  console.log("[露天] .rt-product-card 提取失敗，改用通用連結解析...");
-  await randomDelay(300, 800);
-  const fallbackProducts = await extractFromLinks(page);
+  return [];
+}
 
-  if (fallbackProducts.length > 0) {
-    console.log(
-      `[露天] Fallback 提取完成，共 ${fallbackProducts.length} 件商品`
-    );
-    return fallbackProducts;
+/**
+ * 策略二（Fallback）：從 DOM 提取商品
+ */
+async function extractFromDom(page: Page): Promise<ScrapedProduct[]> {
+  // 捲動觸發懶載入
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
+  await randomDelay(300, 600);
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await randomDelay(500, 1000);
+
+  // 嘗試 .rt-product-card
+  const hasCards = await page
+    .waitForSelector(".rt-product-card", { timeout: 8000 })
+    .then(() => true)
+    .catch(() => false);
+
+  const products = await page.evaluate(
+    ({ hasCards: hc }) => {
+      const results: Array<{
+        platformId: string;
+        title: string;
+        price: number | null;
+        url: string;
+        imageUrl: string | null;
+        seller: string | null;
+      }> = [];
+
+      const seen = new Set<string>();
+
+      if (hc) {
+        // 從 .rt-product-card 提取
+        const cards = document.querySelectorAll(".rt-product-card");
+        for (const card of cards) {
+          const linkEl =
+            card.querySelector<HTMLAnchorElement>(".rt-product-card-img-link") ||
+            card.querySelector<HTMLAnchorElement>(".rt-product-card-name-wrap") ||
+            card.querySelector<HTMLAnchorElement>('a[href*="/item/"]');
+          const href = linkEl?.href || "";
+          const idMatch = href.match(/\/item\/(\d+)/);
+          if (!idMatch || seen.has(idMatch[1])) continue;
+          seen.add(idMatch[1]);
+
+          const nameEl = card.querySelector(".rt-product-card-name");
+          const title = nameEl?.textContent?.trim() || "";
+          if (!title) continue;
+
+          const priceEl = card.querySelector(".rt-text-price");
+          let price: number | null = null;
+          if (priceEl) {
+            const p = parseFloat(priceEl.textContent?.replace(/[^0-9.]/g, "") || "");
+            if (!isNaN(p) && p > 0) price = p;
+          }
+
+          const img = card.querySelector<HTMLImageElement>(".rt-product-card-img");
+          results.push({
+            platformId: idMatch[1],
+            title,
+            price,
+            url: href,
+            imageUrl: img?.src || img?.getAttribute("data-src") || null,
+            seller: null,
+          });
+        }
+      }
+
+      // 通用 a[href*="/item/"] fallback
+      if (results.length === 0) {
+        const links = document.querySelectorAll<HTMLAnchorElement>('a[href*="/item/"]');
+        for (const link of links) {
+          const href = link.href;
+          const idMatch = href.match(/\/item\/(\d+)/);
+          if (!idMatch || seen.has(idMatch[1])) continue;
+          seen.add(idMatch[1]);
+
+          const card = link.closest("div") || link;
+          const img = card.querySelector<HTMLImageElement>("img");
+          const title = img?.alt?.trim() || link.title?.trim() || link.textContent?.trim() || "";
+          if (!title || title.length < 2) continue;
+
+          const priceEl = card.querySelector('[class*="price"]');
+          let price: number | null = null;
+          if (priceEl) {
+            const p = parseFloat(priceEl.textContent?.replace(/[^0-9.]/g, "") || "");
+            if (!isNaN(p) && p > 0) price = p;
+          }
+
+          results.push({
+            platformId: idMatch[1],
+            title,
+            price,
+            url: href,
+            imageUrl: img?.src || img?.getAttribute("data-src") || null,
+            seller: null,
+          });
+        }
+      }
+
+      return results;
+    },
+    { hasCards }
+  );
+
+  return products;
+}
+
+export async function scrapeRuten(
+  page: Page,
+  url: string
+): Promise<ScrapedProduct[]> {
+  console.log(`[露天] 開始爬取: ${url}`);
+
+  // 策略一：攔截 API 回應
+  console.log("[露天] 嘗試攔截 API 回應...");
+  const apiProducts = await interceptApiResponse(page, url);
+  if (apiProducts.length > 0) return apiProducts;
+
+  // 策略二：DOM fallback
+  console.log("[露天] API 攔截無結果，嘗試 DOM 提取...");
+  const domProducts = await extractFromDom(page);
+  if (domProducts.length > 0) {
+    console.log(`[露天] DOM 提取成功，共 ${domProducts.length} 件商品`);
+    return domProducts;
   }
 
-  // 完全沒抓到商品，印出頁面資訊以供除錯
+  // 除錯資訊
   const pageTitle = await page.title();
   const bodyText = await page.evaluate(
-    () => document.body?.innerText?.substring(0, 500) || ""
+    () => document.body?.innerText?.substring(0, 300) || ""
   );
   console.warn(`[露天] 未抓到任何商品`);
   console.warn(`[露天] 頁面標題: ${pageTitle}`);
-  console.warn(`[露天] 頁面內容片段: ${bodyText.substring(0, 200)}`);
-
+  console.warn(`[露天] 頁面片段: ${bodyText.substring(0, 200)}`);
   return [];
 }
