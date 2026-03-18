@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env, BatchProductRequest } from "./types";
-import { sendTelegramMessage } from "./notify";
+import { sendTelegramMessage, sendTelegramMediaGroup } from "./notify";
 
 const VALID_PLATFORMS = ["ruten", "yahoo", "shopee", "carousell"] as const;
 
@@ -80,7 +80,7 @@ app.post("/api/products/batch", async (c) => {
   );
 
   let inserted = 0;
-  const newProducts: { title: string; price: number | null; url: string }[] = [];
+  const newProducts: { title: string; price: number | null; url: string; imageUrl: string | null }[] = [];
 
   try {
     const results = await c.env.DB.batch(statements);
@@ -89,7 +89,7 @@ app.post("/api/products/batch", async (c) => {
       if (result.meta.changes > 0) {
         inserted++;
         const p = products[i];
-        newProducts.push({ title: p.title, price: p.price, url: p.url });
+        newProducts.push({ title: p.title, price: p.price, url: p.url, imageUrl: p.imageUrl });
       }
     });
   } catch (err) {
@@ -97,21 +97,47 @@ app.post("/api/products/batch", async (c) => {
     return c.json({ error: "批次寫入失敗" }, 500);
   }
 
-  // 有新商品就發 Telegram 通知（Telegram 訊息上限 4096 字元，超過分批發送）
+  // 有新商品就發 Telegram 通知
   if (newProducts.length > 0 && c.env.TELEGRAM_BOT_TOKEN) {
     const platformName: Record<string, string> = { ruten: "露天", yahoo: "Yahoo拍賣", carousell: "旋轉拍賣", shopee: "蝦皮" };
-    const header = `<b>🔔 ${platformName[platform] ?? platform}｜發現 ${newProducts.length} 件新商品</b>\n\n`;
+    const pName = platformName[platform] ?? platform;
+
+    // 1) 先發縮圖（有圖的前 10 筆）
+    const withImage = newProducts.filter((p) => p.imageUrl);
+    if (withImage.length > 0) {
+      const photos = withImage.slice(0, 10).map((p, i) => ({
+        imageUrl: p.imageUrl!,
+        caption:
+          i === 0
+            ? `<b>🔔 ${pName}｜發現 ${newProducts.length} 件新商品</b>`
+            : "",
+      }));
+
+      const sent = await sendTelegramMediaGroup(
+        c.env.TELEGRAM_BOT_TOKEN,
+        c.env.TELEGRAM_CHAT_ID,
+        photos
+      );
+      if (!sent) {
+        console.error("Telegram 縮圖發送失敗");
+      }
+    }
+
+    // 2) 再發文字清單
+    const header = withImage.length > 0
+      ? `<b>📋 ${pName}｜商品清單</b>\n\n`
+      : `<b>🔔 ${pName}｜發現 ${newProducts.length} 件新商品</b>\n\n`;
     const lines = newProducts.map(
-      (p) => `- <a href="${escapeHtml(p.url)}">${escapeHtml(p.title)}</a> ${p.price ? `$${p.price}` : ""}`
+      (p) => `• <a href="${escapeHtml(p.url)}">${escapeHtml(p.title)}</a> ${p.price ? `$${p.price}` : ""}`
     );
 
-    // 分批：確保每則訊息不超過 4000 字元（留點餘裕）
+    // 分批：確保每則訊息不超過 4000 字元
     const chunks: string[] = [];
     let current = header;
     for (const line of lines) {
       if (current.length + line.length + 1 > 4000) {
         chunks.push(current);
-        current = `<b>🔔 續...</b>\n\n`;
+        current = `<b>📋 續...</b>\n\n`;
       }
       current += line + "\n";
     }
