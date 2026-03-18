@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env, BatchProductRequest } from "./types";
-import { sendTelegramMessage, sendTelegramMediaGroup } from "./notify";
+import { sendTelegramMessage, sendTelegramPhoto } from "./notify";
 
 const VALID_PLATFORMS = ["ruten", "yahoo", "shopee", "carousell"] as const;
 
@@ -102,55 +102,61 @@ app.post("/api/products/batch", async (c) => {
     const platformName: Record<string, string> = { ruten: "露天", yahoo: "Yahoo拍賣", carousell: "旋轉拍賣", shopee: "蝦皮" };
     const pName = platformName[platform] ?? platform;
 
-    // 1) 先發縮圖（有圖的前 10 筆）
-    const withImage = newProducts.filter((p) => p.imageUrl);
-    if (withImage.length > 0) {
-      const photos = withImage.slice(0, 10).map((p, i) => ({
-        imageUrl: p.imageUrl!,
-        caption:
-          i === 0
-            ? `<b>🔔 ${pName}｜發現 ${newProducts.length} 件新商品</b>`
-            : "",
-      }));
-
-      const sent = await sendTelegramMediaGroup(
-        c.env.TELEGRAM_BOT_TOKEN,
-        c.env.TELEGRAM_CHAT_ID,
-        photos
-      );
-      if (!sent) {
-        console.error("Telegram 縮圖發送失敗");
-      }
-    }
-
-    // 2) 再發文字清單
-    const header = withImage.length > 0
-      ? `<b>📋 ${pName}｜商品清單</b>\n\n`
-      : `<b>🔔 ${pName}｜發現 ${newProducts.length} 件新商品</b>\n\n`;
-    const lines = newProducts.map(
-      (p) => `• <a href="${escapeHtml(p.url)}">${escapeHtml(p.title)}</a> ${p.price ? `$${p.price}` : ""}`
+    // 1) 先發標題
+    await sendTelegramMessage(
+      c.env.TELEGRAM_BOT_TOKEN,
+      c.env.TELEGRAM_CHAT_ID,
+      `<b>🔔 ${pName}｜發現 ${newProducts.length} 件新商品</b>`
     );
 
-    // 分批：確保每則訊息不超過 4000 字元
-    const chunks: string[] = [];
-    let current = header;
-    for (const line of lines) {
-      if (current.length + line.length + 1 > 4000) {
-        chunks.push(current);
-        current = `<b>📋 續...</b>\n\n`;
-      }
-      current += line + "\n";
-    }
-    if (current.trim()) chunks.push(current);
+    // 2) 有圖的前 5 筆，每筆發一張圖+資訊
+    const withImage = newProducts.filter((p) => p.imageUrl);
+    const photoCount = Math.min(withImage.length, 5);
+    for (let i = 0; i < photoCount; i++) {
+      const p = withImage[i];
+      const caption = [
+        `<b>${escapeHtml(p.title)}</b>`,
+        p.price ? `💰 $${p.price}` : "",
+        `🏪 ${pName}`,
+        `🔗 <a href="${escapeHtml(p.url)}">查看商品</a>`,
+      ]
+        .filter(Boolean)
+        .join("\n");
 
-    for (const chunk of chunks) {
-      const sent = await sendTelegramMessage(
+      await sendTelegramPhoto(
         c.env.TELEGRAM_BOT_TOKEN,
         c.env.TELEGRAM_CHAT_ID,
-        chunk
+        p.imageUrl!,
+        caption
       );
-      if (!sent) {
-        console.error("Telegram 通知發送失敗");
+    }
+
+    // 3) 剩餘的發文字清單
+    const remaining = newProducts.slice(photoCount > 0 ? photoCount : 0);
+    if (remaining.length > 0) {
+      const header = `<b>📋 其餘 ${remaining.length} 件</b>\n\n`;
+      const lines = remaining.map(
+        (p) =>
+          `• <a href="${escapeHtml(p.url)}">${escapeHtml(p.title)}</a> ${p.price ? `$${p.price}` : ""}`
+      );
+
+      const chunks: string[] = [];
+      let current = header;
+      for (const line of lines) {
+        if (current.length + line.length + 1 > 4000) {
+          chunks.push(current);
+          current = `<b>📋 續...</b>\n\n`;
+        }
+        current += line + "\n";
+      }
+      if (current.trim()) chunks.push(current);
+
+      for (const chunk of chunks) {
+        await sendTelegramMessage(
+          c.env.TELEGRAM_BOT_TOKEN,
+          c.env.TELEGRAM_CHAT_ID,
+          chunk
+        );
       }
     }
   }

@@ -25,41 +25,29 @@ export async function sendTelegramMessage(
   return true;
 }
 
-interface PhotoMedia {
-  type: "photo";
-  media: string;
-  caption?: string;
-  parse_mode?: string;
-}
-
-/** 發送 Telegram 圖片群組（最多 10 張縮圖） */
-export async function sendTelegramMediaGroup(
+/** 發送單張商品圖+資訊 */
+export async function sendTelegramPhoto(
   token: string,
   chatId: string,
-  photos: Array<{ imageUrl: string; caption: string }>
+  imageUrl: string,
+  caption: string
 ): Promise<boolean> {
-  if (photos.length === 0) return true;
+  const url = `https://api.telegram.org/bot${token}/sendPhoto`;
 
-  // Telegram sendMediaGroup 最多 10 張
-  const batch = photos.slice(0, 10);
-  const media: PhotoMedia[] = batch.map((p, i) => ({
-    type: "photo" as const,
-    media: p.imageUrl,
-    ...(i === 0 ? { caption: p.caption, parse_mode: "HTML" } : {}),
-  }));
-
-  const url = `https://api.telegram.org/bot${token}/sendMediaGroup`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: chatId,
-      media,
+      photo: imageUrl,
+      caption,
+      parse_mode: "HTML",
+      show_caption_above_media: true,
     }),
   });
 
   if (!res.ok) {
-    console.error(`Telegram MediaGroup 錯誤: ${res.status} ${await res.text()}`);
+    console.error(`Telegram Photo 錯誤: ${res.status} ${await res.text()}`);
     return false;
   }
 
