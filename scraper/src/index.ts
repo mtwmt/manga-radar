@@ -1,8 +1,12 @@
-import { chromium } from "playwright";
+import { chromium } from "playwright-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import type { ScrapedProduct, WatchSource } from "./types";
 import { scrapeRuten } from "./platforms/ruten";
 import { scrapeYahoo } from "./platforms/yahoo";
 import { scrapeCarousell } from "./platforms/carousell";
+
+// 啟用 stealth plugin（反偵測）
+chromium.use(StealthPlugin());
 
 const API_URL = process.env.WORKERS_API_URL;
 const API_TOKEN = process.env.API_TOKEN;
