@@ -26,7 +26,9 @@ const scrapers: Record<string, PlatformScraper> = {
 
 /** 從 Workers API 取得啟用中的監控來源 */
 async function fetchSources(): Promise<WatchSource[]> {
-  const res = await fetch(`${API_URL}/api/sources`);
+  const res = await fetch(`${API_URL}/api/sources`, {
+    headers: { Authorization: `Bearer ${API_TOKEN}` },
+  });
   if (!res.ok) {
     throw new Error(`取得監控來源失敗: ${res.status}`);
   }
