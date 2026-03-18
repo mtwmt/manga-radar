@@ -99,7 +99,8 @@ app.post("/api/products/batch", async (c) => {
 
   // 有新商品就發 Telegram 通知（Telegram 訊息上限 4096 字元，超過分批發送）
   if (newProducts.length > 0 && c.env.TELEGRAM_BOT_TOKEN) {
-    const header = `<b>🔔 發現 ${newProducts.length} 件新商品</b>\n\n`;
+    const platformName: Record<string, string> = { ruten: "露天", yahoo: "Yahoo拍賣", carousell: "旋轉拍賣", shopee: "蝦皮" };
+    const header = `<b>🔔 ${platformName[platform] ?? platform}｜發現 ${newProducts.length} 件新商品</b>\n\n`;
     const lines = newProducts.map(
       (p) => `- <a href="${escapeHtml(p.url)}">${escapeHtml(p.title)}</a> ${p.price ? `$${p.price}` : ""}`
     );
