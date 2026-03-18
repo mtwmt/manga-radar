@@ -25,7 +25,7 @@ type PlatformScraper = (
 const scrapers: Record<string, PlatformScraper> = {
   ruten: scrapeRuten,
   yahoo: scrapeYahoo,
-  carousell: scrapeCarousell,
+  // carousell: scrapeCarousell, // 暫停：Cloudflare Turnstile 擋住 GitHub Actions 的 datacenter IP
 };
 
 /** 從 Workers API 取得啟用中的監控來源 */
