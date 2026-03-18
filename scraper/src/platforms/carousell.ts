@@ -47,24 +47,55 @@ interface CarousellApiListing {
   originalPrice?: number;
 }
 
-/** 等待 Cloudflare 挑戰完成 */
+/** 檢查是否為 Cloudflare 挑戰頁面 */
+function isCloudflareChallenge(title: string): boolean {
+  const patterns = ["Just a moment", "請稍候", "请稍候", "Checking", "Verify"];
+  return patterns.some((p) => title.includes(p));
+}
+
+/** 等待 Cloudflare 挑戰完成（支援英文與中文版） */
 async function waitForCloudflare(page: Page): Promise<boolean> {
   const title = await page.title();
-  if (!title.includes("Just a moment")) return true;
+  if (!isCloudflareChallenge(title)) return true;
 
-  console.log(`${LOG_PREFIX} 偵測到 Cloudflare 挑戰，等待中...`);
+  console.log(`${LOG_PREFIX} 偵測到 Cloudflare 挑戰（${title}），等待中...`);
 
   try {
-    // 等待頁面標題不再是 "Just a moment"
+    // 等待頁面標題不再是任何 Cloudflare 挑戰頁
     await page.waitForFunction(
-      () => !document.title.includes("Just a moment"),
-      { timeout: 20000 }
+      (patterns: string[]) =>
+        !patterns.some((p) => document.title.includes(p)),
+      ["Just a moment", "請稍候", "请稍候", "Checking", "Verify"],
+      { timeout: 30000 }
     );
-    console.log(`${LOG_PREFIX} Cloudflare 挑戰通過`);
-    await randomDelay(1000, 2000);
+
+    console.log(`${LOG_PREFIX} Cloudflare 第一層通過，檢查是否有第二層...`);
+    await randomDelay(2000, 3000);
+
+    // 再次檢查（可能有多層挑戰）
+    const newTitle = await page.title();
+    if (isCloudflareChallenge(newTitle)) {
+      console.log(`${LOG_PREFIX} 偵測到第二層挑戰（${newTitle}），繼續等待...`);
+      await page.waitForFunction(
+        (patterns: string[]) =>
+          !patterns.some((p) => document.title.includes(p)),
+        ["Just a moment", "請稍候", "请稍候", "Checking", "Verify"],
+        { timeout: 30000 }
+      );
+      await randomDelay(2000, 3000);
+    }
+
+    const finalTitle = await page.title();
+    if (isCloudflareChallenge(finalTitle)) {
+      console.warn(`${LOG_PREFIX} Cloudflare 挑戰仍未通過: ${finalTitle}`);
+      return false;
+    }
+
+    console.log(`${LOG_PREFIX} Cloudflare 挑戰通過，頁面標題: ${finalTitle}`);
     return true;
   } catch {
-    console.warn(`${LOG_PREFIX} Cloudflare 挑戰等待逾時`);
+    const currentTitle = await page.title().catch(() => "unknown");
+    console.warn(`${LOG_PREFIX} Cloudflare 挑戰等待逾時: ${currentTitle}`);
     return false;
   }
 }
