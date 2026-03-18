@@ -2,8 +2,8 @@ name: Scrape manga listings
 
 on:
   schedule:
-    # 每 4 小時執行一次
-    - cron: '0 */4 * * *'
+    # 每 15 分鐘執行一次
+    - cron: '*/15 * * * *'
   workflow_dispatch: # 手動觸發
 
 jobs:
