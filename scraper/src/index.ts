@@ -4,6 +4,9 @@ import type { ScrapedProduct, WatchSource } from "./types";
 import { scrapeRuten } from "./platforms/ruten";
 import { scrapeYahoo } from "./platforms/yahoo";
 import { scrapeCarousell } from "./platforms/carousell";
+import { scrapeJljh } from "./platforms/jljh";
+import { scrapeSofun } from "./platforms/sofun";
+import { scrapeBbbobo } from "./platforms/bbbobo";
 
 // 啟用 stealth plugin（反偵測）
 chromium.use(StealthPlugin());
@@ -26,6 +29,9 @@ const scrapers: Record<string, PlatformScraper> = {
   ruten: scrapeRuten,
   yahoo: scrapeYahoo,
   // carousell: scrapeCarousell, // 暫停：Cloudflare Turnstile 擋住 GitHub Actions 的 datacenter IP
+  jljh: scrapeJljh,
+  sofun: scrapeSofun,
+  bbbobo: scrapeBbbobo,
 };
 
 /** 從 Workers API 取得啟用中的監控來源 */

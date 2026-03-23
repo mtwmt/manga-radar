@@ -42,7 +42,7 @@ export async function sendTelegramPhoto(
       photo: imageUrl,
       caption,
       parse_mode: "HTML",
-      show_caption_above_media: true,
+      show_caption_above_media: false,
     }),
   });
 

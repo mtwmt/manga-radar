@@ -233,21 +233,11 @@ async function extractFromDom(page: Page): Promise<ScrapedProduct[]> {
   return products;
 }
 
-/**
- * Yahoo 拍賣爬蟲
- *
- * 優先從頁面嵌入的 JSON（ecsearch 物件）中提取資料，
- * 若失敗則 fallback 到 DOM selector 解析。
- */
-export async function scrapeYahoo(
+/** 爬取單一頁面的商品（JSON 優先，DOM fallback） */
+async function scrapeSinglePage(
   page: Page,
   url: string
 ): Promise<ScrapedProduct[]> {
-  console.log(`[Yahoo] 開始爬取: ${url}`);
-
-  // 加入隨機延遲，模擬人類行為
-  await randomDelay(500, 1500);
-
   await page.goto(url, {
     waitUntil: "domcontentloaded",
     timeout: 30000,
@@ -259,8 +249,7 @@ export async function scrapeYahoo(
   });
 
   // 策略一：從嵌入的 JSON 提取
-  console.log("[Yahoo] 嘗試從嵌入 JSON 提取商品資料...");
-  let products = await extractFromEmbeddedJson(page);
+  const products = await extractFromEmbeddedJson(page);
 
   if (products && products.length > 0) {
     console.log(`[Yahoo] JSON 提取成功，共 ${products.length} 件商品`);
@@ -274,4 +263,72 @@ export async function scrapeYahoo(
 
   console.log(`[Yahoo] DOM 提取完成，共 ${domProducts.length} 件商品`);
   return domProducts;
+}
+
+/**
+ * Yahoo 拍賣爬蟲（多頁爬取）
+ *
+ * 爬取前 MAX_PAGES 頁，優先從頁面嵌入的 JSON（ecsearch 物件）中提取資料，
+ * 若失敗則 fallback 到 DOM selector 解析。以 platformId 去重。
+ */
+export async function scrapeYahoo(
+  page: Page,
+  url: string
+): Promise<ScrapedProduct[]> {
+  const MAX_PAGES = 3;
+  console.log(`[Yahoo] 開始爬取（最多 ${MAX_PAGES} 頁）: ${url}`);
+
+  const allProducts: ScrapedProduct[] = [];
+  const seenIds = new Set<string>();
+
+  for (let pg = 1; pg <= MAX_PAGES; pg++) {
+    // 組合分頁 URL
+    const separator = url.includes("?") ? "&" : "?";
+    const pageUrl = pg === 1 ? url : `${url}${separator}pg=${pg}`;
+
+    console.log(`[Yahoo] 爬取第 ${pg}/${MAX_PAGES} 頁: ${pageUrl}`);
+
+    // 頁間隨機延遲（第一頁不需要）
+    if (pg > 1) {
+      const delay = Math.floor(Math.random() * 2000) + 1000; // 1-3 秒
+      console.log(`[Yahoo] 等待 ${delay}ms 後爬取下一頁...`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+
+    try {
+      const pageProducts = await scrapeSinglePage(page, pageUrl);
+
+      if (pageProducts.length === 0) {
+        console.log(`[Yahoo] 第 ${pg} 頁沒有商品，停止翻頁`);
+        break;
+      }
+
+      // 以 platformId 去重後加入結果
+      let newCount = 0;
+      for (const product of pageProducts) {
+        if (!seenIds.has(product.platformId)) {
+          seenIds.add(product.platformId);
+          allProducts.push(product);
+          newCount++;
+        }
+      }
+
+      console.log(
+        `[Yahoo] 第 ${pg} 頁取得 ${pageProducts.length} 件，新增 ${newCount} 件（累計 ${allProducts.length} 件）`
+      );
+
+      // 如果本頁新增數量為 0，代表已經重複，停止翻頁
+      if (newCount === 0) {
+        console.log(`[Yahoo] 第 ${pg} 頁全部重複，停止翻頁`);
+        break;
+      }
+    } catch (error) {
+      console.error(`[Yahoo] 第 ${pg} 頁爬取失敗，跳過:`, error);
+      // 單頁失敗不影響其他頁
+      continue;
+    }
+  }
+
+  console.log(`[Yahoo] 多頁爬取完成，共 ${allProducts.length} 件不重複商品`);
+  return allProducts;
 }

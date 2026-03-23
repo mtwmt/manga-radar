@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { Env, BatchProductRequest } from "./types";
 import { sendTelegramMessage, sendTelegramPhoto } from "./notify";
 
-const VALID_PLATFORMS = ["ruten", "yahoo", "shopee", "carousell"] as const;
+const VALID_PLATFORMS = ["ruten", "yahoo", "shopee", "carousell", "jljh", "sofun", "bbbobo"] as const;
 
 /** HTML 跳脫，防止 Telegram HTML injection */
 function escapeHtml(text: string): string {
@@ -66,6 +66,48 @@ app.post("/api/sources", async (c) => {
   return c.json({ id: result.meta.last_row_id }, 201);
 });
 
+// ── 更新監控來源 ──
+app.patch("/api/sources/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!id || id < 1) {
+    return c.json({ error: "無效的 source ID" }, 400);
+  }
+
+  const body = await c.req.json<{
+    name?: string;
+    url?: string;
+    active?: number;
+    check_interval_min?: number;
+  }>();
+
+  const fields: string[] = [];
+  const values: (string | number)[] = [];
+
+  if (body.name !== undefined) { fields.push("name = ?"); values.push(body.name); }
+  if (body.url !== undefined) { fields.push("url = ?"); values.push(body.url); }
+  if (body.active !== undefined) { fields.push("active = ?"); values.push(body.active); }
+  if (body.check_interval_min !== undefined) { fields.push("check_interval_min = ?"); values.push(body.check_interval_min); }
+
+  if (fields.length === 0) {
+    return c.json({ error: "未提供任何要更新的欄位" }, 400);
+  }
+
+  values.push(id);
+  await c.env.DB.prepare(
+    `UPDATE watch_sources SET ${fields.join(", ")} WHERE id = ?`
+  ).bind(...values).run();
+
+  const { results } = await c.env.DB.prepare(
+    "SELECT * FROM watch_sources WHERE id = ?"
+  ).bind(id).all();
+
+  if (results.length === 0) {
+    return c.json({ error: "找不到該 source" }, 404);
+  }
+
+  return c.json(results[0]);
+});
+
 // ── 爬蟲批次上傳商品 ──
 app.post("/api/products/batch", async (c) => {
   const body = await c.req.json<BatchProductRequest>();
@@ -99,7 +141,7 @@ app.post("/api/products/batch", async (c) => {
 
   // 有新商品就發 Telegram 通知
   if (newProducts.length > 0 && c.env.TELEGRAM_BOT_TOKEN) {
-    const platformName: Record<string, string> = { ruten: "露天", yahoo: "Yahoo拍賣", carousell: "旋轉拍賣", shopee: "蝦皮" };
+    const platformName: Record<string, string> = { ruten: "露天", yahoo: "Yahoo拍賣", carousell: "旋轉拍賣", shopee: "蝦皮", jljh: "蚤來蚤去", sofun: "蚤樂趣", bbbobo: "跳蚤本舖" };
     const pName = platformName[platform] ?? platform;
 
     // 1) 先發標題
@@ -123,12 +165,20 @@ app.post("/api/products/batch", async (c) => {
         .filter(Boolean)
         .join("\n");
 
-      await sendTelegramPhoto(
+      const photoOk = await sendTelegramPhoto(
         c.env.TELEGRAM_BOT_TOKEN,
         c.env.TELEGRAM_CHAT_ID,
         p.imageUrl!,
         caption
       );
+      // 圖片發送失敗時 fallback 成文字訊息
+      if (!photoOk) {
+        await sendTelegramMessage(
+          c.env.TELEGRAM_BOT_TOKEN,
+          c.env.TELEGRAM_CHAT_ID,
+          caption
+        );
+      }
     }
 
     // 3) 剩餘的發文字清單
