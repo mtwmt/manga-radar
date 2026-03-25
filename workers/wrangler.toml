@@ -2,6 +2,10 @@ name = "manga-radar-api"
 main = "src/index.ts"
 compatibility_date = "2025-03-17"
 
+# 每天凌晨 3 點（UTC，台灣 11 點）清理舊資料
+[triggers]
+crons = ["0 3 * * *"]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "manga-radar-db"

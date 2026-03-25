@@ -226,4 +226,21 @@ app.get("/api/products", async (c) => {
   return c.json(results);
 });
 
-export default app;
+export default {
+  fetch: app.fetch,
+
+  /** Cron Trigger：每天清理 2 天前的舊商品和通知紀錄 */
+  async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext) {
+    // 刪除 2 天前的通知紀錄
+    await env.DB.prepare(
+      "DELETE FROM notifications WHERE sent_at < datetime('now', '-2 days')"
+    ).run();
+
+    // 刪除 2 天前的商品（先刪沒有通知紀錄關聯的）
+    const result = await env.DB.prepare(
+      "DELETE FROM products WHERE first_seen_at < datetime('now', '-2 days')"
+    ).run();
+
+    console.log(`[清理] 已刪除 ${result.meta.changes} 筆舊商品`);
+  },
+};
