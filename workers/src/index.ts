@@ -13,6 +13,28 @@ function escapeHtml(text: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/** 將圖片 URL 轉為縮圖版本（各平台不同） */
+function toThumbnail(url: string): string {
+  // 露天：加 _s 或 _m 後綴
+  if (url.includes("ruten.com.tw") || url.includes("img.ruten.com")) {
+    return url.replace(/(\.\w+)$/, "_m$1");
+  }
+  // 蝦皮：加 _tn 後綴（在副檔名前）
+  if (url.includes("susercontent.com")) {
+    if (!url.includes("_tn")) {
+      return url.replace(/(\.\w+)$/, "_tn$1");
+    }
+    return url;
+  }
+  // Yahoo：加 ?w=200 參數
+  if (url.includes("yahoo.com") || url.includes("yimg.com")) {
+    const sep = url.includes("?") ? "&" : "?";
+    return `${url}${sep}w=200`;
+  }
+  // 其他平台：原圖
+  return url;
+}
+
 const app = new Hono<{ Bindings: Env }>();
 
 // ── 健康檢查 ──
@@ -151,11 +173,8 @@ app.post("/api/products/batch", async (c) => {
       `<b>🔔 ${pName}｜發現 ${newProducts.length} 件新商品</b>`
     );
 
-    // 2) 有圖的前 5 筆，每筆發一張圖+資訊
-    const withImage = newProducts.filter((p) => p.imageUrl);
-    const photoCount = Math.min(withImage.length, 5);
-    for (let i = 0; i < photoCount; i++) {
-      const p = withImage[i];
+    // 2) 每筆都發圖文卡片（用縮圖），無圖的發純文字
+    for (const p of newProducts) {
       const caption = [
         `<b>${escapeHtml(p.title)}</b>`,
         p.price ? `💰 $${p.price}` : "",
@@ -165,48 +184,30 @@ app.post("/api/products/batch", async (c) => {
         .filter(Boolean)
         .join("\n");
 
-      const photoOk = await sendTelegramPhoto(
-        c.env.TELEGRAM_BOT_TOKEN,
-        c.env.TELEGRAM_CHAT_ID,
-        p.imageUrl!,
-        caption
-      );
-      // 圖片發送失敗時 fallback 成文字訊息
-      if (!photoOk) {
-        await sendTelegramMessage(
+      if (p.imageUrl) {
+        const thumbUrl = toThumbnail(p.imageUrl);
+        const photoOk = await sendTelegramPhoto(
           c.env.TELEGRAM_BOT_TOKEN,
           c.env.TELEGRAM_CHAT_ID,
+          thumbUrl,
           caption
         );
-      }
-    }
-
-    // 3) 剩餘的發文字清單
-    const remaining = newProducts.slice(photoCount > 0 ? photoCount : 0);
-    if (remaining.length > 0) {
-      const header = `<b>📋 其餘 ${remaining.length} 件</b>\n\n`;
-      const lines = remaining.map(
-        (p) =>
-          `• <a href="${escapeHtml(p.url)}">${escapeHtml(p.title)}</a> ${p.price ? `$${p.price}` : ""}`
-      );
-
-      const chunks: string[] = [];
-      let current = header;
-      for (const line of lines) {
-        if (current.length + line.length + 1 > 4000) {
-          chunks.push(current);
-          current = `<b>📋 續...</b>\n\n`;
+        // 縮圖失敗時試原圖，再失敗用文字
+        if (!photoOk && thumbUrl !== p.imageUrl) {
+          const retryOk = await sendTelegramPhoto(
+            c.env.TELEGRAM_BOT_TOKEN,
+            c.env.TELEGRAM_CHAT_ID,
+            p.imageUrl,
+            caption
+          );
+          if (!retryOk) {
+            await sendTelegramMessage(c.env.TELEGRAM_BOT_TOKEN, c.env.TELEGRAM_CHAT_ID, caption);
+          }
+        } else if (!photoOk) {
+          await sendTelegramMessage(c.env.TELEGRAM_BOT_TOKEN, c.env.TELEGRAM_CHAT_ID, caption);
         }
-        current += line + "\n";
-      }
-      if (current.trim()) chunks.push(current);
-
-      for (const chunk of chunks) {
-        await sendTelegramMessage(
-          c.env.TELEGRAM_BOT_TOKEN,
-          c.env.TELEGRAM_CHAT_ID,
-          chunk
-        );
+      } else {
+        await sendTelegramMessage(c.env.TELEGRAM_BOT_TOKEN, c.env.TELEGRAM_CHAT_ID, caption);
       }
     }
   }

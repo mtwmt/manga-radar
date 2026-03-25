@@ -4,3 +4,6 @@ dist/
 .wrangler/
 *.log
 .DS_Store
+*.png
+scraper/.shopee-profile/
+scraper/shopee-cookies.json

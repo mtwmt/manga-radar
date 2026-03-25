@@ -7,6 +7,7 @@ import { scrapeCarousell } from "./platforms/carousell";
 import { scrapeJljh } from "./platforms/jljh";
 import { scrapeSofun } from "./platforms/sofun";
 import { scrapeBbbobo } from "./platforms/bbbobo";
+import { scrapeShopeeViaCDP } from "./platforms/shopee";
 
 // 啟用 stealth plugin（反偵測）
 chromium.use(StealthPlugin());
@@ -32,6 +33,7 @@ const scrapers: Record<string, PlatformScraper> = {
   jljh: scrapeJljh,
   sofun: scrapeSofun,
   bbbobo: scrapeBbbobo,
+  // shopee 不在這裡，改用 CDP 獨立處理
 };
 
 /** 從 Workers API 取得啟用中的監控來源 */
@@ -88,53 +90,71 @@ async function main() {
     return;
   }
 
-  const browser = await chromium.launch({
-    headless: true,
-    args: [
-      "--disable-blink-features=AutomationControlled",
-      "--no-sandbox",
-    ],
-  });
+  // 將蝦皮和其他平台分開處理
+  const shopeeSources = sources.filter((s) => s.platform === "shopee");
+  const otherSources = sources.filter((s) => s.platform !== "shopee");
 
-  try {
-    for (const source of sources) {
-      const scraper = scrapers[source.platform];
-      if (!scraper) {
-        console.warn(`不支援的平台: ${source.platform}，跳過 ${source.name}`);
-        continue;
+  // 處理非蝦皮平台（共用一個 browser）
+  if (otherSources.length > 0) {
+    const browser = await chromium.launch({
+      headless: true,
+      args: [
+        "--disable-blink-features=AutomationControlled",
+        "--no-sandbox",
+      ],
+    });
+
+    try {
+      for (const source of otherSources) {
+        const scraper = scrapers[source.platform];
+        if (!scraper) {
+          console.warn(`不支援的平台: ${source.platform}，跳過 ${source.name}`);
+          continue;
+        }
+
+        console.log(`\n--- 爬取: ${source.name} (${source.platform}) ---`);
+
+        const context = await browser.newContext({
+          userAgent:
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+          viewport: { width: 1920, height: 1080 },
+          locale: "zh-TW",
+          timezoneId: "Asia/Taipei",
+          extraHTTPHeaders: {
+            "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+          },
+        });
+        await context.addInitScript(() => {
+          Object.defineProperty(navigator, "webdriver", { get: () => false });
+          // @ts-ignore
+          delete navigator.__proto__.webdriver;
+        });
+
+        const page = await context.newPage();
+
+        try {
+          const products = await scraper(page, source.url);
+          await uploadProducts(source.id, source.platform, products);
+        } catch (err) {
+          console.error(`爬取 ${source.name} 失敗:`, err);
+        } finally {
+          await context.close();
+        }
       }
-
-      console.log(`\n--- 爬取: ${source.name} (${source.platform}) ---`);
-
-      const context = await browser.newContext({
-        userAgent:
-          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        viewport: { width: 1920, height: 1080 },
-        locale: "zh-TW",
-        timezoneId: "Asia/Taipei",
-        extraHTTPHeaders: {
-          "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-        },
-      });
-      // 隱藏 webdriver 標記
-      await context.addInitScript(() => {
-        Object.defineProperty(navigator, "webdriver", { get: () => false });
-        // @ts-ignore
-        delete navigator.__proto__.webdriver;
-      });
-      const page = await context.newPage();
-
-      try {
-        const products = await scraper(page, source.url);
-        await uploadProducts(source.id, source.platform, products);
-      } catch (err) {
-        console.error(`爬取 ${source.name} 失敗:`, err);
-      } finally {
-        await context.close();
-      }
+    } finally {
+      await browser.close();
     }
-  } finally {
-    await browser.close();
+  }
+
+  // 處理蝦皮（透過 CDP 連到 NAS Docker Chrome）
+  for (const source of shopeeSources) {
+    console.log(`\n--- 爬取: ${source.name} (${source.platform}) ---`);
+    try {
+      const products = await scrapeShopeeViaCDP(source.url);
+      await uploadProducts(source.id, source.platform, products);
+    } catch (err) {
+      console.error(`爬取 ${source.name} 失敗:`, err);
+    }
   }
 
   console.log("\n=== 爬蟲結束 ===");

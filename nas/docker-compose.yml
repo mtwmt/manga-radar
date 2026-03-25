@@ -1,0 +1,14 @@
+version: "3"
+services:
+  chrome:
+    image: kasmweb/chrome:1.16.0
+    restart: unless-stopped
+    ports:
+      - "6901:6901"   # noVNC 網頁介面（用來手動登入蝦皮）
+      - "9222:9222"   # Chrome DevTools Protocol（爬蟲用）
+    environment:
+      - VNC_PW=shopee123
+      - CHROME_ARGS=--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --disable-blink-features=AutomationControlled
+    volumes:
+      - ./chrome-profile:/home/kasm-user/.config/google-chrome
+    shm_size: "2g"
