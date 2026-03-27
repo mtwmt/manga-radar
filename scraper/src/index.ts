@@ -8,6 +8,7 @@ import { scrapeJljh } from "./platforms/jljh";
 import { scrapeSofun } from "./platforms/sofun";
 import { scrapeBbbobo } from "./platforms/bbbobo";
 import { scrapeShopeeViaCDP } from "./platforms/shopee";
+import { scrapeIopenmall } from "./platforms/iopenmall";
 
 // 啟用 stealth plugin（反偵測）
 chromium.use(StealthPlugin());
@@ -33,6 +34,7 @@ const scrapers: Record<string, PlatformScraper> = {
   jljh: scrapeJljh,
   sofun: scrapeSofun,
   bbbobo: scrapeBbbobo,
+  iopenmall: scrapeIopenmall,
   // shopee 不在這裡，改用 CDP 獨立處理
 };
 

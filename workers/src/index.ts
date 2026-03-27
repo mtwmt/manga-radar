@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { Env, BatchProductRequest } from "./types";
 import { sendTelegramMessage, sendTelegramPhoto } from "./notify";
 
-const VALID_PLATFORMS = ["ruten", "yahoo", "shopee", "carousell", "jljh", "sofun", "bbbobo"] as const;
+const VALID_PLATFORMS = ["ruten", "yahoo", "shopee", "carousell", "jljh", "sofun", "bbbobo", "iopenmall"] as const;
 
 /** HTML 跳脫，防止 Telegram HTML injection */
 function escapeHtml(text: string): string {
@@ -135,6 +135,22 @@ app.post("/api/products/batch", async (c) => {
   const body = await c.req.json<BatchProductRequest>();
   const { source_id, platform, products } = body;
 
+  if (!source_id || !platform || !Array.isArray(products)) {
+    return c.json({ error: "缺少必要欄位：source_id, platform, products" }, 400);
+  }
+
+  if (!VALID_PLATFORMS.includes(platform as typeof VALID_PLATFORMS[number])) {
+    return c.json({ error: `不支援的平台，可選：${VALID_PLATFORMS.join(", ")}` }, 400);
+  }
+
+  if (products.length === 0) {
+    return c.json({ inserted: 0, total: 0 });
+  }
+
+  if (products.length > 200) {
+    return c.json({ error: "單次上傳上限 200 件商品" }, 400);
+  }
+
   // 使用 D1 batch 一次送出所有 INSERT
   const statements = products.map((p) =>
     c.env.DB.prepare(
@@ -144,7 +160,7 @@ app.post("/api/products/batch", async (c) => {
   );
 
   let inserted = 0;
-  const newProducts: { title: string; price: number | null; url: string; imageUrl: string | null }[] = [];
+  const newProductIndices: number[] = [];
 
   try {
     const results = await c.env.DB.batch(statements);
@@ -152,8 +168,7 @@ app.post("/api/products/batch", async (c) => {
     results.forEach((result, i) => {
       if (result.meta.changes > 0) {
         inserted++;
-        const p = products[i];
-        newProducts.push({ title: p.title, price: p.price, url: p.url, imageUrl: p.imageUrl });
+        newProductIndices.push(i);
       }
     });
   } catch (err) {
@@ -161,9 +176,23 @@ app.post("/api/products/batch", async (c) => {
     return c.json({ error: "批次寫入失敗" }, 500);
   }
 
-  // 有新商品就發 Telegram 通知
-  if (newProducts.length > 0 && c.env.TELEGRAM_BOT_TOKEN) {
-    const platformName: Record<string, string> = { ruten: "露天", yahoo: "Yahoo拍賣", carousell: "旋轉拍賣", shopee: "蝦皮", jljh: "蚤來蚤去", sofun: "蚤樂趣", bbbobo: "跳蚤本舖" };
+  // 有新商品：查回 DB 中的 product ID，用於寫 notifications 表
+  if (newProductIndices.length > 0 && c.env.TELEGRAM_BOT_TOKEN && c.env.TELEGRAM_CHAT_ID) {
+    const newProducts = newProductIndices.map((i) => products[i]);
+
+    // 查回剛插入的商品 ID（用 platform + platform_id 匹配）
+    const idLookups = newProducts.map((p) =>
+      c.env.DB.prepare(
+        "SELECT id FROM products WHERE platform = ? AND platform_id = ?"
+      ).bind(platform, p.platformId)
+    );
+    const idResults = await c.env.DB.batch(idLookups);
+    const productDbIds: (number | null)[] = idResults.map((r) => {
+      const row = r.results[0] as { id: number } | undefined;
+      return row?.id ?? null;
+    });
+
+    const platformName: Record<string, string> = { ruten: "露天", yahoo: "Yahoo拍賣", carousell: "旋轉拍賣", shopee: "蝦皮", jljh: "蚤來蚤去", sofun: "蚤樂趣", bbbobo: "跳蚤本舖", iopenmall: "iOPEN Mall" };
     const pName = platformName[platform] ?? platform;
 
     // 1) 先發標題
@@ -173,41 +202,55 @@ app.post("/api/products/batch", async (c) => {
       `<b>🔔 ${pName}｜發現 ${newProducts.length} 件新商品</b>`
     );
 
-    // 2) 每筆都發圖文卡片（用縮圖），無圖的發純文字
-    for (const p of newProducts) {
+    // 2) 逐筆發圖文卡片，每則之間延遲避免 Telegram rate limit
+    for (let idx = 0; idx < newProducts.length; idx++) {
+      const p = newProducts[idx];
+      const dbId = productDbIds[idx];
+
       const caption = [
         `<b>${escapeHtml(p.title)}</b>`,
         p.price ? `💰 $${p.price}` : "",
-        `🏪 ${pName}`,
+        `🏪 ${escapeHtml(pName)}`,
         `🔗 <a href="${escapeHtml(p.url)}">查看商品</a>`,
       ]
         .filter(Boolean)
         .join("\n");
 
+      let sent = false;
+
       if (p.imageUrl) {
         const thumbUrl = toThumbnail(p.imageUrl);
-        const photoOk = await sendTelegramPhoto(
-          c.env.TELEGRAM_BOT_TOKEN,
-          c.env.TELEGRAM_CHAT_ID,
-          thumbUrl,
-          caption
+        sent = await sendTelegramPhoto(
+          c.env.TELEGRAM_BOT_TOKEN, c.env.TELEGRAM_CHAT_ID, thumbUrl, caption
         );
-        // 縮圖失敗時試原圖，再失敗用文字
-        if (!photoOk && thumbUrl !== p.imageUrl) {
-          const retryOk = await sendTelegramPhoto(
-            c.env.TELEGRAM_BOT_TOKEN,
-            c.env.TELEGRAM_CHAT_ID,
-            p.imageUrl,
-            caption
+        // 縮圖失敗 → 試原圖
+        if (!sent && thumbUrl !== p.imageUrl) {
+          sent = await sendTelegramPhoto(
+            c.env.TELEGRAM_BOT_TOKEN, c.env.TELEGRAM_CHAT_ID, p.imageUrl, caption
           );
-          if (!retryOk) {
-            await sendTelegramMessage(c.env.TELEGRAM_BOT_TOKEN, c.env.TELEGRAM_CHAT_ID, caption);
-          }
-        } else if (!photoOk) {
-          await sendTelegramMessage(c.env.TELEGRAM_BOT_TOKEN, c.env.TELEGRAM_CHAT_ID, caption);
+        }
+        // 圖片都失敗 → 純文字
+        if (!sent) {
+          sent = await sendTelegramMessage(
+            c.env.TELEGRAM_BOT_TOKEN, c.env.TELEGRAM_CHAT_ID, caption
+          );
         }
       } else {
-        await sendTelegramMessage(c.env.TELEGRAM_BOT_TOKEN, c.env.TELEGRAM_CHAT_ID, caption);
+        sent = await sendTelegramMessage(
+          c.env.TELEGRAM_BOT_TOKEN, c.env.TELEGRAM_CHAT_ID, caption
+        );
+      }
+
+      // 通知成功才寫 notifications 表，失敗的之後由 cron 補發
+      if (sent && dbId) {
+        await c.env.DB.prepare(
+          "INSERT INTO notifications (product_id) VALUES (?)"
+        ).bind(dbId).run();
+      }
+
+      // 延遲 150ms 避免 Telegram rate limit (30 msg/sec)
+      if (idx < newProducts.length - 1) {
+        await new Promise((r) => setTimeout(r, 150));
       }
     }
   }
@@ -229,18 +272,79 @@ app.get("/api/products", async (c) => {
 export default {
   fetch: app.fetch,
 
-  /** Cron Trigger：每天清理 2 天前的舊商品和通知紀錄 */
+  /** Cron Trigger：補發漏掉的通知 + 清理舊資料 */
   async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext) {
-    // 刪除 2 天前的通知紀錄
-    await env.DB.prepare(
-      "DELETE FROM notifications WHERE sent_at < datetime('now', '-2 days')"
-    ).run();
+    try {
+      // ── 補發未通知的商品（2 天內、沒有 notification 記錄的，之後才清理） ──
+      if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) {
+        const { results: missed } = await env.DB.prepare(
+          `SELECT p.id, p.platform, p.title, p.price, p.url, p.image_url
+           FROM products p
+           LEFT JOIN notifications n ON n.product_id = p.id
+           WHERE n.id IS NULL AND p.first_seen_at > datetime('now', '-2 days')
+           ORDER BY p.first_seen_at ASC
+           LIMIT 100`
+        ).all<{ id: number; platform: string; title: string; price: number | null; url: string; image_url: string | null }>();
 
-    // 刪除 2 天前的商品（先刪沒有通知紀錄關聯的）
-    const result = await env.DB.prepare(
-      "DELETE FROM products WHERE first_seen_at < datetime('now', '-2 days')"
-    ).run();
+        if (missed.length > 0) {
+          const platformName: Record<string, string> = { ruten: "露天", yahoo: "Yahoo拍賣", carousell: "旋轉拍賣", shopee: "蝦皮", jljh: "蚤來蚤去", sofun: "蚤樂趣", bbbobo: "跳蚤本舖", iopenmall: "iOPEN Mall" };
 
-    console.log(`[清理] 已刪除 ${result.meta.changes} 筆舊商品`);
+          console.log(`[補發] 發現 ${missed.length} 筆漏通知商品`);
+          await sendTelegramMessage(
+            env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_CHAT_ID,
+            `<b>🔄 補發 ${missed.length} 件漏通知商品</b>`
+          );
+
+          for (const p of missed) {
+            const pName = platformName[p.platform] ?? p.platform;
+            const caption = [
+              `<b>${escapeHtml(p.title)}</b>`,
+              p.price ? `💰 $${p.price}` : "",
+              `🏪 ${escapeHtml(pName)}`,
+              `🔗 <a href="${escapeHtml(p.url)}">查看商品</a>`,
+            ].filter(Boolean).join("\n");
+
+            let sent = false;
+            if (p.image_url) {
+              sent = await sendTelegramPhoto(
+                env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_CHAT_ID,
+                toThumbnail(p.image_url), caption
+              );
+              if (!sent) {
+                sent = await sendTelegramMessage(
+                  env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_CHAT_ID, caption
+                );
+              }
+            } else {
+              sent = await sendTelegramMessage(
+                env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_CHAT_ID, caption
+              );
+            }
+
+            if (sent) {
+              await env.DB.prepare(
+                "INSERT INTO notifications (product_id) VALUES (?)"
+              ).bind(p.id).run();
+            }
+
+            await new Promise((r) => setTimeout(r, 150));
+          }
+          console.log(`[補發] 完成`);
+        }
+      }
+
+      // ── 清理 2 天前的舊資料 ──
+      const notifResult = await env.DB.prepare(
+        "DELETE FROM notifications WHERE sent_at < datetime('now', '-2 days')"
+      ).run();
+      console.log(`[清理] 已刪除 ${notifResult.meta.changes} 筆通知紀錄`);
+
+      const result = await env.DB.prepare(
+        "DELETE FROM products WHERE first_seen_at < datetime('now', '-2 days')"
+      ).run();
+      console.log(`[清理] 已刪除 ${result.meta.changes} 筆舊商品`);
+    } catch (err) {
+      console.error("[排程] 失敗:", err instanceof Error ? err.message : "未知錯誤");
+    }
   },
 };

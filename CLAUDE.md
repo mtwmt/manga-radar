@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-manga-radar 是一個台灣二手漫畫監控系統，自動從多個拍賣平台（露天、Yahoo拍賣、旋轉拍賣）抓取商品列表，透過 Telegram 通知新上架商品。
+manga-radar 是一個台灣二手漫畫監控系統，自動從多個拍賣平台（露天、Yahoo拍賣、蚤來蚤去、蚤樂趣、跳蚤本舖）抓取商品列表，透過 Telegram 通知新上架商品。
 
 ## Architecture
 
@@ -21,24 +21,28 @@ Monorepo 分為兩個主要模組：
 
 ```bash
 # 安裝依賴（monorepo root）
-pnpm install
+npm install
 
 # 本地執行爬蟲
-pnpm scraper start
+cd scraper && npm start
 
 # 本地開發 Workers
-pnpm dev:workers
+npm run dev:workers
 
 # D1 資料庫 migration
-pnpm workers db:migrate
+cd workers && npm run db:migrate
 
-# 部署 Workers 到 production
-pnpm deploy:workers
+# 部署 Workers 到 production（必須指定 bkdglot 帳號的認證）
+CLOUDFLARE_API_TOKEN=<見 workers/.dev.vars> CLOUDFLARE_ACCOUNT_ID=ab25fbefc96e0821d6bcc9679d2086d9 npm run deploy:workers
 ```
+
+> **注意：Workers 部署在 bkdglot@gmail.com 的 Cloudflare 帳號**，不是 Mandy 帳號。
+> 不要用 `wrangler login` 的 OAuth（會連到錯的帳號），必須用環境變數指定 token。
+> Token 和 Account ID 存在 `workers/.dev.vars`。
 
 ## Tech Stack
 
-- TypeScript, pnpm monorepo
+- TypeScript, npm monorepo
 - Scraper: Playwright + playwright-extra (stealth plugin)
 - API: Hono on Cloudflare Workers
 - Database: Cloudflare D1 (SQLite), schema 在 `workers/schema.sql`
@@ -49,9 +53,11 @@ pnpm deploy:workers
 
 - 商品去重靠 D1 的 `UNIQUE(platform, platform_id)` 約束，INSERT OR IGNORE
 - 爬蟲使用 stealth plugin + 自訂 user agent 做反偵測
-- Workers API 用 `API_TOKEN` header 做簡易認證
-- Telegram 通知分為：header 訊息 + 最多 5 張圖片卡片 + 剩餘商品文字列表（4000 字元分段）
-- Carousell 爬蟲目前因 Cloudflare Turnstile 封鎖已停用
+- Workers API 用 `Bearer API_TOKEN` header 做認證
+- Telegram 通知：header 訊息 + 逐筆圖文卡片（縮圖→原圖→純文字 fallback），成功才寫 `notifications` 表，失敗由 cron 補發
+- Cron（每天 03:00 UTC）：補發漏通知商品 + 清理 2 天前舊資料
+- Carousell 爬蟲因 Cloudflare Turnstile 封鎖已停用
+- Shopee 爬蟲需透過 NAS Docker Chrome CDP 連線，目前暫停
 
 ## Environment Variables
 
