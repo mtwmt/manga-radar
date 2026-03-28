@@ -185,25 +185,36 @@ async function extractFromDom(page: Page): Promise<ScrapedProduct[]> {
       seen.add(href);
       const productId = idMatch[1];
 
-      // 在連結或其父元素中尋找商品資訊
-      const card = link.closest("li") || link.closest("div") || link;
+      // 商品卡片：Yahoo 拍賣的 <a> 直接放在 <ul> 裡，不包在 <li> 中
+      // 所以用 link 本身作為卡片範圍，避免 closest('div') 跳到整個列表容器
+      const card = link.closest("li") || link;
 
-      // 標題：優先從 title 屬性取，其次從文字內容取
+      // 標題：優先從 img alt 取（Yahoo 會把完整標題放在圖片 alt），
+      // 其次從商品標題 span 取，最後 fallback 到連結文字
+      const imgEl = card.querySelector<HTMLImageElement>("img[alt]");
       const titleEl =
-        card.querySelector("[title]") ||
-        card.querySelector("h3, h4, span[class*='title'], div[class*='title']");
+        card.querySelector("h3, h4") ||
+        card.querySelector("span[class*='1drl28c']");
       const title =
-        titleEl?.getAttribute("title") ||
+        imgEl?.alt?.trim() ||
         titleEl?.textContent?.trim() ||
         link.textContent?.trim() ||
         "";
 
-      // 價格：找包含 $ 的元素
-      const priceEl = card.querySelector(
-        "span[class*='price'], div[class*='price'], em, b"
-      );
-      const priceText = priceEl?.textContent?.replace(/[^0-9.]/g, "") || "";
-      const price = priceText ? Number(priceText) : null;
+      // 價格：Yahoo 拍賣價格在 class 含 sc-1drl28c-5 的 div 或含 $ 的元素中
+      let price: number | null = null;
+      const allEls = card.querySelectorAll("div, span");
+      for (const el of allEls) {
+        const t = el.textContent?.trim() || "";
+        // 匹配 $數字 格式且不含太多其他文字（避免抓到整個卡片文字）
+        if (/^\$[\d,.]+$/.test(t)) {
+          const num = Number(t.replace(/[^0-9.]/g, ""));
+          if (!isNaN(num) && num > 0) {
+            price = num;
+            break;
+          }
+        }
+      }
 
       // 圖片
       const img = card.querySelector<HTMLImageElement>("img");

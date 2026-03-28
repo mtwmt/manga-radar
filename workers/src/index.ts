@@ -13,26 +13,11 @@ function escapeHtml(text: string): string {
     .replace(/"/g, "&quot;");
 }
 
-/** 將圖片 URL 轉為縮圖版本（各平台不同） */
+/** 將圖片 URL 轉為縮圖版本，統一限制最大高度 300px */
 function toThumbnail(url: string): string {
-  // 露天：加 _s 或 _m 後綴
-  if (url.includes("ruten.com.tw") || url.includes("img.ruten.com")) {
-    return url.replace(/(\.\w+)$/, "_m$1");
-  }
-  // 蝦皮：加 _tn 後綴（在副檔名前）
-  if (url.includes("susercontent.com")) {
-    if (!url.includes("_tn")) {
-      return url.replace(/(\.\w+)$/, "_tn$1");
-    }
-    return url;
-  }
-  // Yahoo：加 ?w=200 參數
-  if (url.includes("yahoo.com") || url.includes("yimg.com")) {
-    const sep = url.includes("?") ? "&" : "?";
-    return `${url}${sep}w=200`;
-  }
-  // 其他平台：原圖
-  return url;
+  // 透過 wsrv.nl 免費圖片代理統一縮放，限制最大高度
+  // fit=inside 會等比縮放，不裁切；output=jpg 確保相容性
+  return `https://wsrv.nl/?url=${encodeURIComponent(url)}&h=200&fit=inside&output=jpg`;
 }
 
 const app = new Hono<{ Bindings: Env }>();
