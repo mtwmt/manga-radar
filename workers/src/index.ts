@@ -180,14 +180,10 @@ app.post("/api/products/batch", async (c) => {
     const platformName: Record<string, string> = { ruten: "露天", yahoo: "Yahoo拍賣", carousell: "旋轉拍賣", shopee: "蝦皮", jljh: "蚤來蚤去", sofun: "蚤樂趣", bbbobo: "跳蚤本舖", iopenmall: "iOPEN Mall" };
     const pName = platformName[platform] ?? platform;
 
-    // 1) 先發標題
-    await sendTelegramMessage(
-      c.env.TELEGRAM_BOT_TOKEN,
-      c.env.TELEGRAM_CHAT_ID,
-      `<b>🔔 ${pName}｜發現 ${newProducts.length} 件新商品</b>`
-    );
+    // 逐筆發圖文卡片，每則之間延遲避免 Telegram rate limit
+    let sentCount = 0;
+    const failedItems: Array<{ caption: string; dbId: number | null }> = [];
 
-    // 2) 逐筆發圖文卡片，每則之間延遲避免 Telegram rate limit
     for (let idx = 0; idx < newProducts.length; idx++) {
       const p = newProducts[idx];
       const dbId = productDbIds[idx];
@@ -226,11 +222,13 @@ app.post("/api/products/batch", async (c) => {
         );
       }
 
-      // 通知成功才寫 notifications 表，失敗的之後由 cron 補發
       if (sent && dbId) {
+        sentCount++;
         await c.env.DB.prepare(
           "INSERT INTO notifications (product_id) VALUES (?)"
         ).bind(dbId).run();
+      } else if (!sent) {
+        failedItems.push({ caption, dbId });
       }
 
       // 延遲 150ms 避免 Telegram rate limit (30 msg/sec)
@@ -238,6 +236,26 @@ app.post("/api/products/batch", async (c) => {
         await new Promise((r) => setTimeout(r, 150));
       }
     }
+
+    // 立刻重試失敗的項目（純文字，不帶圖，間隔加長避免 rate limit）
+    for (const item of failedItems) {
+      await new Promise((r) => setTimeout(r, 500));
+      const sent = await sendTelegramMessage(
+        c.env.TELEGRAM_BOT_TOKEN, c.env.TELEGRAM_CHAT_ID, item.caption
+      );
+      if (sent && item.dbId) {
+        sentCount++;
+        await c.env.DB.prepare(
+          "INSERT INTO notifications (product_id) VALUES (?)"
+        ).bind(item.dbId).run();
+      }
+    }
+
+    // 最後發送摘要
+    await sendTelegramMessage(
+      c.env.TELEGRAM_BOT_TOKEN, c.env.TELEGRAM_CHAT_ID,
+      `<b>🔔 ${pName}｜${sentCount} 件新商品</b>`
+    );
   }
 
   return c.json({ inserted, total: products.length });
